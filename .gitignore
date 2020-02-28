@@ -1,0 +1,6 @@
+# for CsToCppPorting\MemoryManagementCheck
+CsToCppPorting/MemoryManagementCheck/.vs
+CsToCppPorting/MemoryManagementCheck/**/bin
+CsToCppPorting/MemoryManagementCheck/**/obj
+CsToCppPorting/MemoryManagementCheck/**/*.user
+CsToCppPorting/MemoryManagementCheck/packages
