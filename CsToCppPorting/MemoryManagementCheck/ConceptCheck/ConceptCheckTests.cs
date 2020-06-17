@@ -105,6 +105,47 @@ namespace SomeNamespaceB
     }
 }
 
+namespace ExamplesNamespace
+{
+    public class Node
+    {
+        // parent node
+        public Node Parent;
+        [CppAttributes.CppWeakPtr]
+        public Node WeakParent;
+
+        // next sibling
+        public Node NextSibling;
+        [CppAttributes.CppWeakPtr]
+        public Node WeakNextSibling;
+
+        // children
+        public Node[] Children;
+        [CppAttributes.CppWeakPtr]
+        public Node[] WeakChildren;
+    }
+
+    public class CustomNode : Node
+    {
+    }
+
+    public class NodeHolder
+    {
+        public OtherExamplesNamespace.NodeRefs Refs;
+    }
+}
+
+namespace OtherExamplesNamespace
+{
+    public class NodeRefs
+    {
+        public ExamplesNamespace.Node Ref;
+
+        [CppAttributes.CppWeakPtr]
+        public ExamplesNamespace.Node WeakRef;
+    }
+}
+
 
 namespace ConceptCheck
 {
@@ -266,6 +307,61 @@ namespace ConceptCheck
         }
     }
 
+    public static class InstanceGraphChecker
+    {
+        public static Boolean HasStrongLinkCycles(InstanceGraphSnapshot snapshot)
+        {
+            // deep first search (DFS)
+            Color[] colors = new Color[snapshot.Nodes.Count];
+            if (HasStrongLinkCyclesImpl(snapshot.Root, colors))
+                return true;
+            foreach (InstanceNode node in snapshot.Nodes)
+            {
+                if (colors[node.Id - 1] == Color.While && HasStrongLinkCyclesImpl(node, colors))
+                    return true;
+            }
+            return false;
+        }
+
+        public static Boolean HasWeakConnectedComponents(InstanceGraphSnapshot snapshot)
+        {
+            // deep first search (DFS)
+            Boolean[] visited = new Boolean[snapshot.Nodes.Count];
+            HasWeakConnectedComponentsImpl(snapshot.Root, visited);
+            return visited.Any(value => !value);
+        }
+
+        private static Boolean HasStrongLinkCyclesImpl(InstanceNode current, Color[] colors)
+        {
+            colors[current.Id - 1] = Color.Grey;
+            foreach (PtrLink child in current.Children.Where(link => link.PtrType == CppPtrType.Strong))
+            {
+                if (colors[child.ToNode.Id - 1] == Color.While)
+                    HasStrongLinkCyclesImpl(child.ToNode, colors);
+                if (colors[child.ToNode.Id - 1] == Color.Grey)
+                    return true;
+            }
+            colors[current.Id - 1] = Color.Black;
+            return false;
+        }
+
+        private static void HasWeakConnectedComponentsImpl(InstanceNode current, Boolean[] visited)
+        {
+            if (visited[current.Id - 1])
+                return;
+            visited[current.Id - 1] = true;
+            foreach (PtrLink child in current.Children.Where(link => link.PtrType == CppPtrType.Strong))
+                HasWeakConnectedComponentsImpl(child.ToNode, visited);
+        }
+
+        private enum Color
+        {
+            While = 0,
+            Grey,
+            Black
+        }
+    }
+
     [TestFixture]
     public class InstanceGraphTests
     {
@@ -423,6 +519,742 @@ namespace ConceptCheck
                 if (weakPtrs.Count > 0)
                     Console.WriteLine("Weak ptr links: {0}", String.Join(", ", weakPtrs.Select(ptr => ptr.ToNode.Id)));
             }
+        }
+    }
+
+    [TestFixture]
+    public class CheckStrongLinkCyclesTests
+    {
+        [Test]
+        public void CheckSingleObject()
+        {
+            ExamplesNamespace.Node node = new ExamplesNamespace.Node();
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(node)));
+        }
+
+        [Test]
+        public void CheckSingleObjectWithSelfStrongRef()
+        {
+            ExamplesNamespace.Node node = new ExamplesNamespace.Node();
+            node.NextSibling = node;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(true, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(node)));
+        }
+
+        [Test]
+        public void CheckSingleDerivedObjectWithSelfStrongRef()
+        {
+            ExamplesNamespace.CustomNode node = new ExamplesNamespace.CustomNode();
+            node.NextSibling = node;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(true, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(node)));
+        }
+
+        [Test]
+        public void CheckSingleObjectWithSelfWeakRef()
+        {
+            ExamplesNamespace.Node node = new ExamplesNamespace.Node();
+            node.WeakNextSibling = node;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(node)));
+        }
+
+        [Test]
+        public void CheckSingleDerivedObjectWithSelfWeakRef()
+        {
+            ExamplesNamespace.CustomNode node = new ExamplesNamespace.CustomNode();
+            node.WeakNextSibling = node;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(node)));
+        }
+
+        [Test]
+        public void CheckSimpleCycleRefsObjects()
+        {
+            ExamplesNamespace.Node node1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node node2 = new ExamplesNamespace.Node();
+            node1.NextSibling = node2;
+            node2.NextSibling = node1;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(true, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(node1)));
+        }
+
+        [Test]
+        public void CheckSimpleCycleRefsDerivedObjects()
+        {
+            ExamplesNamespace.CustomNode node1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode node2 = new ExamplesNamespace.CustomNode();
+            node1.NextSibling = node2;
+            node2.NextSibling = node1;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(true, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(node1)));
+        }
+
+        [Test]
+        public void CheckSimpleCycleRefsObjectsWithWeakRef()
+        {
+            ExamplesNamespace.Node node1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node node2 = new ExamplesNamespace.Node();
+            node1.NextSibling = node2;
+            node2.WeakNextSibling = node1;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(node1)));
+        }
+
+        [Test]
+        public void CheckSimpleCycleRefsDerivedObjectsWithWeakRef()
+        {
+            ExamplesNamespace.CustomNode node1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode node2 = new ExamplesNamespace.CustomNode();
+            node1.NextSibling = node2;
+            node2.WeakNextSibling = node1;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(node1)));
+        }
+
+        [Test]
+        public void CheckCycleRefsObjects()
+        {
+            ExamplesNamespace.Node node1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node node2 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node node3 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node node4 = new ExamplesNamespace.Node();
+            node1.NextSibling = node2;
+            node2.NextSibling = node3;
+            node3.NextSibling = node4;
+            node4.NextSibling = node1;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(true, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(node1)));
+        }
+
+        [Test]
+        public void CheckCycleRefsDerivedObjects()
+        {
+            ExamplesNamespace.CustomNode node1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode node2 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode node3 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode node4 = new ExamplesNamespace.CustomNode();
+            node1.NextSibling = node2;
+            node2.NextSibling = node3;
+            node3.NextSibling = node4;
+            node4.NextSibling = node1;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(true, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(node1)));
+        }
+
+        [Test]
+        public void CheckCycleRefsObjectsWithWeakRef()
+        {
+            ExamplesNamespace.Node node1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node node2 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node node3 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node node4 = new ExamplesNamespace.Node();
+            node1.NextSibling = node2;
+            node2.NextSibling = node3;
+            node3.NextSibling = node4;
+            node4.WeakNextSibling = node1;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(node1)));
+        }
+
+        [Test]
+        public void CheckCycleRefsDerivedObjectsWithWeakRef()
+        {
+            ExamplesNamespace.CustomNode node1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode node2 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode node3 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode node4 = new ExamplesNamespace.CustomNode();
+            node1.NextSibling = node2;
+            node2.NextSibling = node3;
+            node3.NextSibling = node4;
+            node4.WeakNextSibling = node1;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(node1)));
+        }
+
+        [Test]
+        public void CheckObjectsTree()
+        {
+            ExamplesNamespace.Node grandparent = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node parent1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node parent2 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child2 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child3 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child4 = new ExamplesNamespace.Node();
+            grandparent.Children = new[] {parent1, parent2};
+            parent1.Children = new[] {child1, child2};
+            parent2.Children = new[] {child3, child4};
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(grandparent)));
+        }
+
+        [Test]
+        public void CheckDerivedObjectsTree()
+        {
+            ExamplesNamespace.CustomNode grandparent = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode parent1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode parent2 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child2 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child3 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child4 = new ExamplesNamespace.CustomNode();
+            grandparent.Children = new[] {parent1, parent2};
+            parent1.Children = new[] {child1, child2};
+            parent2.Children = new[] {child3, child4};
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(grandparent)));
+        }
+
+        [Test]
+        public void CheckObjectsTreeWithParentRef()
+        {
+            ExamplesNamespace.Node grandparent = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node parent1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node parent2 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child2 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child3 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child4 = new ExamplesNamespace.Node();
+            grandparent.Children = new[] {parent1, parent2};
+            parent1.Parent = grandparent;
+            parent1.Children = new[] {child1, child2};
+            parent2.Parent = grandparent;
+            parent2.Children = new[] {child3, child4};
+            child1.Parent = parent1;
+            child2.Parent = parent1;
+            child3.Parent = parent2;
+            child4.Parent = parent2;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(true, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(grandparent)));
+        }
+
+        [Test]
+        public void CheckDerivedObjectsTreeWithParentRef()
+        {
+            ExamplesNamespace.CustomNode grandparent = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode parent1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode parent2 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child2 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child3 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child4 = new ExamplesNamespace.CustomNode();
+            grandparent.Children = new[] {parent1, parent2};
+            parent1.Parent = grandparent;
+            parent1.Children = new[] {child1, child2};
+            parent2.Parent = grandparent;
+            parent2.Children = new[] {child3, child4};
+            child1.Parent = parent1;
+            child2.Parent = parent1;
+            child3.Parent = parent2;
+            child4.Parent = parent2;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(true, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(grandparent)));
+        }
+
+        [Test]
+        public void CheckObjectsTreeWithParentWeakRef()
+        {
+            ExamplesNamespace.Node grandparent = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node parent1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node parent2 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child2 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child3 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child4 = new ExamplesNamespace.Node();
+            grandparent.Children = new[] {parent1, parent2};
+            parent1.WeakParent = grandparent;
+            parent1.Children = new[] {child1, child2};
+            parent2.WeakParent = grandparent;
+            parent2.Children = new[] {child3, child4};
+            child1.WeakParent = parent1;
+            child2.WeakParent = parent1;
+            child3.WeakParent = parent2;
+            child4.WeakParent = parent2;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(grandparent)));
+        }
+
+        [Test]
+        public void CheckDerivedObjectsTreeWithParentWeakRef()
+        {
+            ExamplesNamespace.CustomNode grandparent = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode parent1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode parent2 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child2 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child3 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child4 = new ExamplesNamespace.CustomNode();
+            grandparent.Children = new[] {parent1, parent2};
+            parent1.WeakParent = grandparent;
+            parent1.Children = new[] {child1, child2};
+            parent2.WeakParent = grandparent;
+            parent2.Children = new[] {child3, child4};
+            child1.WeakParent = parent1;
+            child2.WeakParent = parent1;
+            child3.WeakParent = parent2;
+            child4.WeakParent = parent2;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(grandparent)));
+        }
+
+        [Test]
+        public void CheckObjectsTreeWithSiblingRefs()
+        {
+            ExamplesNamespace.Node grandparent = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node parent1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node parent2 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child2 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child3 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child4 = new ExamplesNamespace.Node();
+            grandparent.Children = new[] {parent1, parent2};
+            parent1.Children = new[] {child1, child2};
+            parent2.Children = new[] {child3, child4};
+            parent1.NextSibling = parent2;
+            parent2.NextSibling = parent1;
+            child1.NextSibling = child2;
+            child2.NextSibling = child1;
+            child3.NextSibling = child4;
+            child4.NextSibling = child3;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(true, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(grandparent)));
+        }
+
+        [Test]
+        public void CheckDerivedObjectsTreeWithSiblingRefs()
+        {
+            ExamplesNamespace.CustomNode grandparent = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode parent1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode parent2 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child2 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child3 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child4 = new ExamplesNamespace.CustomNode();
+            grandparent.Children = new[] {parent1, parent2};
+            parent1.Children = new[] {child1, child2};
+            parent2.Children = new[] {child3, child4};
+            parent1.NextSibling = parent2;
+            parent2.NextSibling = parent1;
+            child1.NextSibling = child2;
+            child2.NextSibling = child1;
+            child3.NextSibling = child4;
+            child4.NextSibling = child3;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(true, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(grandparent)));
+        }
+
+        [Test]
+        public void CheckObjectsTreeWithWeakSiblingRefs()
+        {
+            ExamplesNamespace.Node grandparent = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node parent1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node parent2 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child2 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child3 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child4 = new ExamplesNamespace.Node();
+            grandparent.Children = new[] {parent1, parent2};
+            parent1.Children = new[] {child1, child2};
+            parent2.Children = new[] {child3, child4};
+            parent1.WeakNextSibling = parent2;
+            parent2.WeakNextSibling = parent1;
+            child1.WeakNextSibling = child2;
+            child2.WeakNextSibling = child1;
+            child3.WeakNextSibling = child4;
+            child4.WeakNextSibling = child3;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(grandparent)));
+        }
+
+        [Test]
+        public void CheckDerivedObjectsTreeWithWeakSiblingRefs()
+        {
+            ExamplesNamespace.CustomNode grandparent = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode parent1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode parent2 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child2 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child3 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child4 = new ExamplesNamespace.CustomNode();
+            grandparent.Children = new[] {parent1, parent2};
+            parent1.Children = new[] {child1, child2};
+            parent2.Children = new[] {child3, child4};
+            parent1.WeakNextSibling = parent2;
+            parent2.WeakNextSibling = parent1;
+            child1.WeakNextSibling = child2;
+            child2.WeakNextSibling = child1;
+            child3.WeakNextSibling = child4;
+            child4.WeakNextSibling = child3;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(grandparent)));
+        }
+
+        [Test]
+        public void CheckObjectsTreeWithSiblingRefsWithoutCycle()
+        {
+            ExamplesNamespace.Node grandparent = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node parent1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node parent2 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child2 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child3 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child4 = new ExamplesNamespace.Node();
+            grandparent.Children = new[] { parent1, parent2 };
+            parent1.Children = new[] { child1, child2 };
+            parent2.Children = new[] { child3, child4 };
+            parent1.NextSibling = parent2;
+            parent2.WeakNextSibling = parent1;
+            child1.NextSibling = child2;
+            child2.WeakNextSibling = child1;
+            child3.NextSibling = child4;
+            child4.WeakNextSibling = child3;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(grandparent)));
+        }
+
+        [Test]
+        public void CheckDerivedObjectsTreeWithSiblingRefsWithoutCycle()
+        {
+            ExamplesNamespace.CustomNode grandparent = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode parent1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode parent2 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child2 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child3 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child4 = new ExamplesNamespace.CustomNode();
+            grandparent.Children = new[] {parent1, parent2};
+            parent1.Children = new[] {child1, child2};
+            parent2.Children = new[] {child3, child4};
+            parent1.NextSibling = parent2;
+            parent2.WeakNextSibling = parent1;
+            child1.NextSibling = child2;
+            child2.WeakNextSibling = child1;
+            child3.NextSibling = child4;
+            child4.WeakNextSibling = child3;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(grandparent)));
+        }
+
+        [Test]
+        public void CheckObjectsGraphWithWeakConnectedCycle()
+        {
+            ExamplesNamespace.Node parent = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child2 = new ExamplesNamespace.Node();
+            parent.WeakChildren = new[] {child1, child2};
+            child1.NextSibling = child2;
+            child2.NextSibling = child1;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(true, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(parent)));
+        }
+
+        [Test]
+        public void CheckDerivedObjectsGraphWithWeakConnectedCycle()
+        {
+            ExamplesNamespace.CustomNode parent = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child2 = new ExamplesNamespace.CustomNode();
+            parent.WeakChildren = new[] {child1, child2};
+            child1.NextSibling = child2;
+            child2.NextSibling = child1;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(true, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(parent)));
+        }
+
+        [Test]
+        public void CheckObjectsCycleViaExternalTypeInstance()
+        {
+            ExamplesNamespace.Node node1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node node2 = new ExamplesNamespace.Node();
+            node1.NextSibling = node2;
+            node2.NextSibling = node1;
+            ExamplesNamespace.NodeHolder nodeHolder = new ExamplesNamespace.NodeHolder();
+            nodeHolder.Refs = new OtherExamplesNamespace.NodeRefs();
+            nodeHolder.Refs.Ref = node1;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(nodeHolder)));
+        }
+
+        [Test]
+        public void CheckDerivedObjectsCycleViaExternalTypeInstance()
+        {
+            ExamplesNamespace.CustomNode node1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode node2 = new ExamplesNamespace.CustomNode();
+            node1.NextSibling = node2;
+            node2.NextSibling = node1;
+            ExamplesNamespace.NodeHolder nodeHolder = new ExamplesNamespace.NodeHolder();
+            nodeHolder.Refs = new OtherExamplesNamespace.NodeRefs();
+            nodeHolder.Refs.Ref = node1;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasStrongLinkCycles(graphFactory.CreateSnapshot(nodeHolder)));
+        }
+    }
+
+    [TestFixture]
+    public class CheckWeakConnectedComponentsTests
+    {
+        [Test]
+        public void CheckSingleObject()
+        {
+            ExamplesNamespace.Node node = new ExamplesNamespace.Node();
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasWeakConnectedComponents(graphFactory.CreateSnapshot(node)));
+        }
+
+        [Test]
+        public void CheckSimpleCycleRefsObjects()
+        {
+            ExamplesNamespace.Node node1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node node2 = new ExamplesNamespace.Node();
+            node1.NextSibling = node2;
+            node2.NextSibling = node1;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasWeakConnectedComponents(graphFactory.CreateSnapshot(node1)));
+        }
+
+        [Test]
+        public void CheckSimpleCycleRefsDerivedObjects()
+        {
+            ExamplesNamespace.CustomNode node1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode node2 = new ExamplesNamespace.CustomNode();
+            node1.NextSibling = node2;
+            node2.NextSibling = node1;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasWeakConnectedComponents(graphFactory.CreateSnapshot(node1)));
+        }
+
+        [Test]
+        public void CheckSimpleCycleRefsObjectsWithWeakRef()
+        {
+            ExamplesNamespace.Node node1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node node2 = new ExamplesNamespace.Node();
+            node1.NextSibling = node2;
+            node2.WeakNextSibling = node1;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasWeakConnectedComponents(graphFactory.CreateSnapshot(node1)));
+        }
+
+        [Test]
+        public void CheckSimpleCycleRefsDerivedObjectsWithWeakRef()
+        {
+            ExamplesNamespace.CustomNode node1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode node2 = new ExamplesNamespace.CustomNode();
+            node1.NextSibling = node2;
+            node2.WeakNextSibling = node1;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasWeakConnectedComponents(graphFactory.CreateSnapshot(node1)));
+        }
+
+        [Test]
+        public void CheckSimpleCycleWeakRefsObjects()
+        {
+            ExamplesNamespace.Node node1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node node2 = new ExamplesNamespace.Node();
+            node1.WeakNextSibling = node2;
+            node2.WeakNextSibling = node1;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(true, InstanceGraphChecker.HasWeakConnectedComponents(graphFactory.CreateSnapshot(node1)));
+        }
+
+        [Test]
+        public void CheckSimpleCycleWeakRefsDerivedObjects()
+        {
+            ExamplesNamespace.CustomNode node1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode node2 = new ExamplesNamespace.CustomNode();
+            node1.WeakNextSibling = node2;
+            node2.WeakNextSibling = node1;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(true, InstanceGraphChecker.HasWeakConnectedComponents(graphFactory.CreateSnapshot(node1)));
+        }
+
+        [Test]
+        public void CheckObjectsTree()
+        {
+            ExamplesNamespace.Node grandparent = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node parent1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node parent2 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child2 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child3 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child4 = new ExamplesNamespace.Node();
+            grandparent.Children = new[] {parent1, parent2};
+            parent1.Children = new[] {child1, child2};
+            parent2.Children = new[] {child3, child4};
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasWeakConnectedComponents(graphFactory.CreateSnapshot(grandparent)));
+        }
+
+        [Test]
+        public void CheckDerivedObjectsTree()
+        {
+            ExamplesNamespace.CustomNode grandparent = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode parent1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode parent2 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child2 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child3 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child4 = new ExamplesNamespace.CustomNode();
+            grandparent.Children = new[] {parent1, parent2};
+            parent1.Children = new[] {child1, child2};
+            parent2.Children = new[] {child3, child4};
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasWeakConnectedComponents(graphFactory.CreateSnapshot(grandparent)));
+        }
+
+        [Test]
+        public void CheckObjectsTreeWithWeakChildren()
+        {
+            ExamplesNamespace.Node grandparent = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node parent1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node parent2 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child2 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child3 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node child4 = new ExamplesNamespace.Node();
+            grandparent.Children = new[] {parent1, parent2};
+            parent1.WeakChildren = new[] {child1, child2};
+            parent2.WeakChildren = new[] {child3, child4};
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(true, InstanceGraphChecker.HasWeakConnectedComponents(graphFactory.CreateSnapshot(grandparent)));
+        }
+
+        [Test]
+        public void CheckDerivedObjectsTreeWithWeakChildren()
+        {
+            ExamplesNamespace.CustomNode grandparent = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode parent1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode parent2 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child2 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child3 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode child4 = new ExamplesNamespace.CustomNode();
+            grandparent.Children = new[] {parent1, parent2};
+            parent1.WeakChildren = new[] {child1, child2};
+            parent2.WeakChildren = new[] {child3, child4};
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(true, InstanceGraphChecker.HasWeakConnectedComponents(graphFactory.CreateSnapshot(grandparent)));
+        }
+
+        [Test]
+        public void CheckObjectsGraphWithStrongRefParts()
+        {
+            ExamplesNamespace.Node node1Part1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node node2Part1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node node1Part2 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node node2Part2 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node node3Part2 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node node1Part3 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node node2Part3 = new ExamplesNamespace.Node();
+            node1Part1.NextSibling = node2Part1;
+            node2Part1.NextSibling = node1Part1;
+            node1Part1.Children = new[] {node1Part2};
+            node1Part2.NextSibling = node2Part2;
+            node2Part2.NextSibling = node3Part2;
+            node3Part2.NextSibling = node1Part2;
+            node1Part2.Children = new[] {node1Part3};
+            node1Part3.NextSibling = node2Part3;
+            node2Part3.NextSibling = node1Part3;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasWeakConnectedComponents(graphFactory.CreateSnapshot(node1Part1)));
+        }
+
+        [Test]
+        public void CheckDerivedObjectsGraphWithStrongRefParts()
+        {
+            ExamplesNamespace.CustomNode node1Part1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode node2Part1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode node1Part2 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode node2Part2 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode node3Part2 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode node1Part3 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode node2Part3 = new ExamplesNamespace.CustomNode();
+            node1Part1.NextSibling = node2Part1;
+            node2Part1.NextSibling = node1Part1;
+            node1Part1.Children = new[] {node1Part2};
+            node1Part2.NextSibling = node2Part2;
+            node2Part2.NextSibling = node3Part2;
+            node3Part2.NextSibling = node1Part2;
+            node1Part2.Children = new[] {node1Part3};
+            node1Part3.NextSibling = node2Part3;
+            node2Part3.NextSibling = node1Part3;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasWeakConnectedComponents(graphFactory.CreateSnapshot(node1Part1)));
+        }
+
+        [Test]
+        public void CheckObjectsGraphWithWeakRefParts()
+        {
+            ExamplesNamespace.Node node1Part1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node node2Part1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node node1Part2 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node node2Part2 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node node3Part2 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node node1Part3 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node node2Part3 = new ExamplesNamespace.Node();
+            node1Part1.NextSibling = node2Part1;
+            node2Part1.NextSibling = node1Part1;
+            node1Part1.WeakChildren = new[] {node1Part2};
+            node1Part2.NextSibling = node2Part2;
+            node2Part2.NextSibling = node3Part2;
+            node3Part2.NextSibling = node1Part2;
+            node1Part2.WeakChildren = new[] {node1Part3};
+            node1Part3.NextSibling = node2Part3;
+            node2Part3.NextSibling = node1Part3;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(true, InstanceGraphChecker.HasWeakConnectedComponents(graphFactory.CreateSnapshot(node1Part1)));
+        }
+
+        [Test]
+        public void CheckDerivedObjectsGraphWithWeakRefParts()
+        {
+            ExamplesNamespace.CustomNode node1Part1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode node2Part1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode node1Part2 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode node2Part2 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode node3Part2 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode node1Part3 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode node2Part3 = new ExamplesNamespace.CustomNode();
+            node1Part1.NextSibling = node2Part1;
+            node2Part1.NextSibling = node1Part1;
+            node1Part1.WeakChildren = new[] {node1Part2};
+            node1Part2.NextSibling = node2Part2;
+            node2Part2.NextSibling = node3Part2;
+            node3Part2.NextSibling = node1Part2;
+            node1Part2.WeakChildren = new[] {node1Part3};
+            node1Part3.NextSibling = node2Part3;
+            node2Part3.NextSibling = node1Part3;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(true, InstanceGraphChecker.HasWeakConnectedComponents(graphFactory.CreateSnapshot(node1Part1)));
+        }
+
+        [Test]
+        public void CheckWealConnectedObjectsViaExternalTypeInstance()
+        {
+            ExamplesNamespace.Node node1 = new ExamplesNamespace.Node();
+            ExamplesNamespace.Node node2 = new ExamplesNamespace.Node();
+            node1.NextSibling = node2;
+            node2.NextSibling = node1;
+            ExamplesNamespace.NodeHolder nodeHolder = new ExamplesNamespace.NodeHolder();
+            nodeHolder.Refs = new OtherExamplesNamespace.NodeRefs();
+            nodeHolder.Refs.WeakRef = node1;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasWeakConnectedComponents(graphFactory.CreateSnapshot(nodeHolder)));
+        }
+
+        [Test]
+        public void CheckWealConnectedDerivedObjectsViaExternalTypeInstance()
+        {
+            ExamplesNamespace.CustomNode node1 = new ExamplesNamespace.CustomNode();
+            ExamplesNamespace.CustomNode node2 = new ExamplesNamespace.CustomNode();
+            node1.NextSibling = node2;
+            node2.NextSibling = node1;
+            ExamplesNamespace.NodeHolder nodeHolder = new ExamplesNamespace.NodeHolder();
+            nodeHolder.Refs = new OtherExamplesNamespace.NodeRefs();
+            nodeHolder.Refs.WeakRef = node1;
+            InstanceGraphFactory graphFactory = new InstanceGraphFactory("ExamplesNamespace");
+            Assert.AreEqual(false, InstanceGraphChecker.HasWeakConnectedComponents(graphFactory.CreateSnapshot(nodeHolder)));
         }
     }
 
